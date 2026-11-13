@@ -19,32 +19,34 @@ const VYCHOZI_DATA = [
 
 export default function ExcelEditor() {
   const workbookRef = useRef(null);
-  const [sheets, setSheets] = useState(VYCHOZI_DATA);
-  const [version, setVersion] = useState(0); // Slouží k vynucení překreslení tabulky
-  const [status, setStatus] = useState("Načítám data...");
+  const [sheets, setSheets] = useState(null); // Začínáme s null, dokud se nezeptáme serveru
+  const [version, setVersion] = useState(0);
+  const [status, setStatus] = useState("Připojuji se k serveru...");
 
-  // 1. NAČTENÍ sdílené tabulky ze serveru (bez cache)
-  const loadFromServer = () => {
+  // 1. NAČTENÍ sdílené tabulky ze serveru
+  const loadFromServer = async () => {
     setStatus("Načítám nejnovější data ze serveru...");
-    fetch(`/.netlify/functions/tabulka?t=${Date.now()}`, {
-      cache: "no-store",
-    })
-      .then((res) => {
-        if (!res.ok) throw new Error("Server neodpovídá");
-        return res.json();
-      })
-      .then((savedData) => {
-        if (savedData && Array.isArray(savedData) && savedData.length > 0) {
-          setSheets(savedData);
-          setVersion((v) => v + 1); // Vynutí překreslení tabulky s novými daty
-          setStatus("Načtena nejnovější verze ze serveru");
-        } else {
-          setStatus("Zobrazena výchozí tabulka (na serveru zatím nic není)");
-        }
-      })
-      .catch(() => {
-        setStatus("Lokální režim (ukládání vyžaduje Netlify)");
+    try {
+      const res = await fetch(`/.netlify/functions/tabulka?t=${Date.now()}`, {
+        cache: "no-store",
       });
+      if (!res.ok) throw new Error("Server neodpovídá");
+
+      const savedData = await res.json();
+      if (savedData && Array.isArray(savedData) && savedData.length > 0 && savedData.celldata?.length > 0) {
+        setSheets(savedData);
+        setVersion((v) => v + 1);
+        setStatus(`Načteno ze serveru (počet buněk: ${savedData.celldata.length})`);
+      } else {
+        setSheets(JSON.parse(JSON.stringify(VYCHOZI_DATA)));
+        setVersion((v) => v + 1);
+        setStatus("Zobrazena výchozí tabulka (server je zatím prázdný)");
+      }
+    } catch {
+      setSheets(JSON.parse(JSON.stringify(VYCHOZI_DATA)));
+      setVersion((v) => v + 1);
+      setStatus("Lokální režim (ukládání vyžaduje Netlify)");
+    }
   };
 
   useEffect(() => {
@@ -57,18 +59,27 @@ export default function ExcelEditor() {
     setStatus("Ukládám...");
 
     const currentSheets = workbookRef.current.getAllSheets();
+    let totalCells = 0;
 
     const formattedSheets = currentSheets.map((sheet) => {
       const celldata = [];
-      (sheet.data || []).forEach((row, r) => {
-        if (!row) return;
-        row.forEach((cell, c) => {
-          // Uložíme buňku pouze tehdy, pokud má hodnotu nebo vzorec
-          if (cell && (cell.v !== undefined && cell.v !== null && cell.v !== "" || cell.f)) {
-            celldata.push({ r, c, v: cell });
-          }
+
+      // FortuneSheet ukládá aktuální stav mřížky do sheet.data
+      if (Array.isArray(sheet.data)) {
+        sheet.data.forEach((row, r) => {
+          if (!Array.isArray(row)) return;
+          row.forEach((cell, c) => {
+            if (cell !== null && cell !== undefined) {
+              // Vytvoříme čistý objekt buňky
+              const cleanCell = typeof cell === "object" ? { ...cell } : { v: cell };
+              if ((cleanCell.v !== undefined && cleanCell.v !== null && cleanCell.v !== "") || cleanCell.f) {
+                celldata.push({ r, c, v: cleanCell });
+                totalCells++;
+              }
+            }
+          });
         });
-      });
+      }
 
       return {
         name: sheet.name || "List 1",
@@ -84,7 +95,9 @@ export default function ExcelEditor() {
       });
 
       if (res.ok) {
-        setStatus("Uloženo! Změny jsou nyní na serveru pro všechny.");
+        // Aktualizujeme i lokální stav sheets, aby odpovídal uloženým datům
+        setSheets(formattedSheets);
+        setStatus(`Uloženo na server! (Uloženo buněk: ${totalCells})`);
       } else {
         const errData = await res.json().catch(() => ({}));
         setStatus(`Chyba serveru (${res.status}): ${errData.error || "Neznámá chyba"}`);
@@ -170,11 +183,15 @@ export default function ExcelEditor() {
       </div>
 
       <div style={{ width: "100%", height: "500px", border: "1px solid #ccc" }}>
-        <Workbook
-          ref={workbookRef}
-          data={sheets}
-          key={version}
-        />
+        {sheets ? (
+          <Workbook
+            ref={workbookRef}
+            data={sheets}
+            key={version}
+          />
+        ) : (
+          <div style={{ padding: "20px", textAlign: "center" }}>Načítám tabulku ze serveru...</div>
+        )}
       </div>
     </div>
   );
